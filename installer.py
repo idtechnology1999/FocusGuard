@@ -1,0 +1,499 @@
+import os
+import sys
+import shutil
+import subprocess
+
+INSTALL_DIR = os.path.join(os.getenv("PROGRAMFILES", "C:\\Program Files"), "FocusGuard")
+CONFIG_PATH = os.path.join(INSTALL_DIR, "config.json")
+EXE_PATH    = os.path.join(INSTALL_DIR, "FocusGuard.exe")
+
+_STARTUP_FOLDER = os.path.join(
+    os.environ.get("APPDATA", ""),
+    "Microsoft", "Windows", "Start Menu", "Programs", "Startup"
+)
+
+
+def is_installed():
+    if getattr(sys, 'frozen', False):
+        return os.path.exists(EXE_PATH)
+    return os.path.exists(INSTALL_DIR) and os.path.exists(CONFIG_PATH)
+
+
+def get_usb_path():
+    if getattr(sys, 'frozen', False):
+        return os.path.dirname(sys.executable)
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+def is_running_from_usb():
+    drive = os.path.splitdrive(get_usb_path())[0]
+    try:
+        import win32file
+        return win32file.GetDriveType(drive + "\\") == win32file.DRIVE_REMOVABLE
+    except Exception:
+        return True
+
+
+def install_to_computer():
+    """Install Focus Guard to Program Files. Returns (success, error_message)."""
+    try:
+        os.makedirs(INSTALL_DIR, exist_ok=True)
+        usb_path = get_usb_path()
+
+        if getattr(sys, 'frozen', False):
+            shutil.copy2(sys.executable, EXE_PATH)
+        else:
+            for f in ["main.py", "usb_auth.py", "blocker.py",
+                      "session.py", "gui.py", "installer.py"]:
+                src = os.path.join(usb_path, f)
+                if os.path.exists(src):
+                    shutil.copy2(src, os.path.join(INSTALL_DIR, f))
+            img_src = os.path.join(usb_path, "image")
+            img_dst = os.path.join(INSTALL_DIR, "image")
+            if os.path.exists(img_src):
+                if os.path.exists(img_dst):
+                    shutil.rmtree(img_dst)
+                shutil.copytree(img_src, img_dst)
+
+        cfg_src = os.path.join(usb_path, "config.json")
+        if os.path.exists(cfg_src) and not os.path.exists(CONFIG_PATH):
+            shutil.copy2(cfg_src, CONFIG_PATH)
+        elif not os.path.exists(CONFIG_PATH):
+            import json
+            with open(CONFIG_PATH, "w") as f:
+                json.dump({
+                    "blocked_sites": [],
+                    "registered_devices": [],
+                    "session_log": [],
+                    "active_session": None
+                }, f, indent=4)
+
+        # Create shortcuts, startup entries and registry records
+        _create_desktop_shortcut()
+        _create_startmenu_shortcut()
+        _create_startup_folder_entry()
+        _register_task_scheduler()
+        _register_autoplay_handler()
+        _register_uninstall_entry()
+        set_startup(EXE_PATH)   # Always point startup to installed EXE
+
+        return True, None
+    except Exception as e:
+        return False, str(e)
+
+
+# ── Desktop path ───────────────────────────────────────────────────────────────
+
+def _get_desktop():
+    try:
+        import winreg
+        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER,
+            r"Software\Microsoft\Windows\CurrentVersion\Explorer\Shell Folders")
+        path = winreg.QueryValueEx(key, "Desktop")[0]
+        winreg.CloseKey(key)
+        if os.path.isdir(path):
+            return path
+    except Exception:
+        pass
+    for p in [
+        os.path.join(os.path.expanduser("~"), "Desktop"),
+        os.path.join(os.environ.get("USERPROFILE", ""), "Desktop"),
+        os.path.join("C:\\Users", os.environ.get("USERNAME", ""), "Desktop"),
+    ]:
+        if os.path.isdir(p):
+            return p
+    return os.path.expanduser("~")
+
+
+def _get_target():
+    if getattr(sys, 'frozen', False):
+        return EXE_PATH
+    return os.path.join(INSTALL_DIR, "main.py")
+
+
+# ── Shortcut creation ──────────────────────────────────────────────────────────
+
+def _create_desktop_shortcut():
+    desktop = _get_desktop()
+    lnk     = os.path.join(desktop, "Focus Guard.lnk")
+    target  = _get_target()
+    if _make_lnk(lnk, target):
+        return True
+    # Ultimate fallback: copy EXE directly to Desktop
+    if getattr(sys, 'frozen', False) and os.path.exists(EXE_PATH):
+        try:
+            dest = os.path.join(desktop, "Focus Guard.exe")
+            shutil.copy2(EXE_PATH, dest)
+            return os.path.exists(dest)
+        except Exception:
+            pass
+    return False
+
+
+def _create_startmenu_shortcut():
+    try:
+        sm = os.path.join(os.environ.get("APPDATA", ""),
+                          "Microsoft", "Windows", "Start Menu",
+                          "Programs", "Focus Guard.lnk")
+        _make_lnk(sm, _get_target())
+    except Exception:
+        pass
+
+
+def _create_startup_folder_entry():
+    """Add shortcut to Windows Startup folder — runs on every login."""
+    try:
+        os.makedirs(_STARTUP_FOLDER, exist_ok=True)
+        lnk = os.path.join(_STARTUP_FOLDER, "FocusGuard.lnk")
+        _make_lnk(lnk, _get_target())
+    except Exception:
+        pass
+
+
+def _make_lnk(lnk_path, target):
+    """Try 4 methods to create a .lnk shortcut."""
+    # Method 1: win32com
+    try:
+        import win32com.client
+        shell = win32com.client.Dispatch("WScript.Shell")
+        sc = shell.CreateShortCut(lnk_path)
+        sc.TargetPath = target
+        sc.WorkingDirectory = INSTALL_DIR
+        sc.Description = "Focus Guard — Productivity Enforcement System"
+        sc.IconLocation = target + ",0"
+        sc.save()
+        if os.path.exists(lnk_path):
+            return True
+    except Exception:
+        pass
+
+    # Method 2: PowerShell with ExecutionPolicy bypass
+    try:
+        ps = (
+            f'$ws = New-Object -ComObject WScript.Shell; '
+            f'$sc = $ws.CreateShortcut("{lnk_path}"); '
+            f'$sc.TargetPath = "{target}"; '
+            f'$sc.WorkingDirectory = "{INSTALL_DIR}"; '
+            f'$sc.Description = "Focus Guard"; '
+            f'$sc.Save()'
+        )
+        subprocess.run(
+            ["powershell", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", ps],
+            check=True, capture_output=True, timeout=15
+        )
+        if os.path.exists(lnk_path):
+            return True
+    except Exception:
+        pass
+
+    # Method 3: VBScript via cscript
+    try:
+        vbs = (
+            f'Set oWS = WScript.CreateObject("WScript.Shell")\n'
+            f'Set oLink = oWS.CreateShortcut("{lnk_path}")\n'
+            f'oLink.TargetPath = "{target}"\n'
+            f'oLink.WorkingDirectory = "{INSTALL_DIR}"\n'
+            f'oLink.Description = "Focus Guard"\n'
+            f'oLink.Save\n'
+        )
+        tmp = os.path.join(os.environ.get("TEMP", "C:\\Temp"), "fg_lnk.vbs")
+        with open(tmp, "w") as f:
+            f.write(vbs)
+        subprocess.run(["cscript", "//Nologo", tmp],
+                       check=True, capture_output=True, timeout=15)
+        try:
+            os.remove(tmp)
+        except Exception:
+            pass
+        if os.path.exists(lnk_path):
+            return True
+    except Exception:
+        pass
+
+    # Method 4: Write raw .lnk bytes (minimal header, points to target)
+    try:
+        _write_raw_lnk(lnk_path, target)
+        if os.path.exists(lnk_path):
+            return True
+    except Exception:
+        pass
+
+    return False
+
+
+def _write_raw_lnk(lnk_path, target_path):
+    """Write a minimal Windows Shell Link (.lnk) file pointing to target_path."""
+    import struct
+    target_bytes = (target_path + "\x00").encode("utf-16-le")
+    # Shell Link header (76 bytes)
+    header  = b'\x4c\x00\x00\x00'                  # HeaderSize = 76
+    header += b'\x01\x14\x02\x00\x00\x00\x00\x00'  # LinkCLSID part 1
+    header += b'\xc0\x00\x00\x00\x00\x00\x00\x46'  # LinkCLSID part 2
+    header += struct.pack('<I', 0x0001)              # LinkFlags: HasLinkTargetIDList
+    header += struct.pack('<I', 0x0020)              # FileAttributes: FILE_ATTRIBUTE_ARCHIVE
+    header += b'\x00' * 8                           # CreationTime
+    header += b'\x00' * 8                           # AccessTime
+    header += b'\x00' * 8                           # WriteTime
+    header += struct.pack('<I', 0)                   # FileSize
+    header += struct.pack('<I', 0)                   # IconIndex
+    header += struct.pack('<I', 1)                   # ShowCommand: SW_NORMAL
+    header += struct.pack('<H', 0)                   # HotKey
+    header += b'\x00' * 10                          # Reserved
+    # StringData: LocalBasePath (Unicode)
+    str_data  = struct.pack('<H', len(target_path))
+    str_data += target_path.encode("utf-16-le")
+    # IDList placeholder (minimal)
+    id_list   = b'\x14\x00' + b'\x1f\x50' + b'\xe0\x4f\xd0\x20\xea\x3a\x69\x10'
+    id_list  += b'\xa2\xd8\x08\x00\x2b\x30\x30\x9d' + b'\x00\x00'
+    id_list_size = struct.pack('<H', len(id_list))
+
+    with open(lnk_path, 'wb') as f:
+        f.write(header)
+        f.write(id_list_size)
+        f.write(id_list)
+        f.write(str_data)
+
+
+# ── Task Scheduler watchdog ────────────────────────────────────────────────────
+
+def _register_task_scheduler():
+    """Register a scheduled task that auto-restarts FocusGuard every 5 min."""
+    try:
+        exe = EXE_PATH if getattr(sys, 'frozen', False) else _get_target()
+        subprocess.run([
+            "schtasks", "/create",
+            "/tn", "FocusGuardWatchdog",
+            "/tr", f'"{exe}"',
+            "/sc", "minute",
+            "/mo", "5",
+            "/f",
+            "/rl", "HIGHEST",
+        ], capture_output=True, check=False, timeout=20)
+    except Exception:
+        pass
+
+
+def _unregister_task_scheduler():
+    try:
+        subprocess.run(
+            ["schtasks", "/delete", "/tn", "FocusGuardWatchdog", "/f"],
+            capture_output=True, check=False, timeout=10
+        )
+    except Exception:
+        pass
+
+
+# ── AutoPlay handler ───────────────────────────────────────────────────────────
+
+def _register_autoplay_handler():
+    """Register Focus Guard in AutoPlay so inserting the USB offers 'Launch Focus Guard'."""
+    try:
+        import winreg
+        exe = EXE_PATH if getattr(sys, 'frozen', False) else _get_target()
+
+        # Register the handler definition
+        hpath = r"SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\AutoplayHandlers\Handlers\FocusGuardHandler"
+        hkey = winreg.CreateKey(winreg.HKEY_CURRENT_USER, hpath)
+        winreg.SetValueEx(hkey, "Action",        0, winreg.REG_SZ, "Launch Focus Guard")
+        winreg.SetValueEx(hkey, "Provider",       0, winreg.REG_SZ, "Focus Guard")
+        winreg.SetValueEx(hkey, "DefaultIcon",    0, winreg.REG_SZ, f"{exe},0")
+        winreg.SetValueEx(hkey, "InvokeProgram",  0, winreg.REG_SZ, exe)
+        winreg.CloseKey(hkey)
+
+        # Bind handler to USB/storage arrival event
+        epath = r"SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\AutoplayHandlers\EventHandlers\StorageOnArrival"
+        ekey = winreg.CreateKey(winreg.HKEY_CURRENT_USER, epath)
+        winreg.SetValueEx(ekey, "FocusGuardHandler", 0, winreg.REG_SZ, "")
+        winreg.CloseKey(ekey)
+    except Exception:
+        pass
+
+
+def _unregister_autoplay_handler():
+    try:
+        import winreg
+        for path in [
+            r"SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\AutoplayHandlers\Handlers\FocusGuardHandler",
+        ]:
+            try:
+                winreg.DeleteKey(winreg.HKEY_CURRENT_USER, path)
+            except Exception:
+                pass
+        try:
+            ekey = winreg.OpenKey(winreg.HKEY_CURRENT_USER,
+                r"SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\AutoplayHandlers\EventHandlers\StorageOnArrival",
+                0, winreg.KEY_SET_VALUE)
+            try:
+                winreg.DeleteValue(ekey, "FocusGuardHandler")
+            except FileNotFoundError:
+                pass
+            winreg.CloseKey(ekey)
+        except Exception:
+            pass
+    except Exception:
+        pass
+
+
+# ── Startup registry ───────────────────────────────────────────────────────────
+
+def get_installed_path():
+    return INSTALL_DIR
+
+
+def set_startup(exe_path=None):
+    try:
+        import winreg
+        if exe_path is None:
+            exe_path = EXE_PATH if getattr(sys, 'frozen', False) else _get_target()
+        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER,
+            r"Software\Microsoft\Windows\CurrentVersion\Run",
+            0, winreg.KEY_SET_VALUE)
+        winreg.SetValueEx(key, "FocusGuard", 0, winreg.REG_SZ, exe_path)
+        winreg.CloseKey(key)
+    except Exception:
+        pass
+
+
+def remove_startup():
+    try:
+        import winreg
+        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER,
+            r"Software\Microsoft\Windows\CurrentVersion\Run",
+            0, winreg.KEY_SET_VALUE)
+        try:
+            winreg.DeleteValue(key, "FocusGuard")
+        except FileNotFoundError:
+            pass
+        winreg.CloseKey(key)
+    except Exception:
+        pass
+
+
+def uninstall():
+    try:
+        remove_startup()
+        _unregister_task_scheduler()
+        _unregister_autoplay_handler()
+        _unregister_uninstall_entry()
+        if os.path.exists(INSTALL_DIR):
+            shutil.rmtree(INSTALL_DIR)
+        desktop = _get_desktop()
+        for p in [
+            os.path.join(desktop, "Focus Guard.lnk"),
+            os.path.join(desktop, "Focus Guard.exe"),
+            os.path.join(os.environ.get("APPDATA", ""),
+                         "Microsoft", "Windows", "Start Menu",
+                         "Programs", "Focus Guard.lnk"),
+            os.path.join(_STARTUP_FOLDER, "FocusGuard.lnk"),
+        ]:
+            if os.path.exists(p):
+                try:
+                    os.remove(p)
+                except Exception:
+                    pass
+        return True
+    except Exception:
+        return False
+
+
+# ── Programs & Features (Add/Remove Programs) ─────────────────────────────────
+
+def _register_uninstall_entry():
+    """Add Focus Guard to Windows Programs & Features list."""
+    try:
+        import winreg, time as _t
+        key_path = r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\FocusGuard"
+        # Try HKLM first (shows for all users), fall back to HKCU
+        for root in (winreg.HKEY_LOCAL_MACHINE, winreg.HKEY_CURRENT_USER):
+            try:
+                key = winreg.CreateKey(root, key_path)
+                winreg.SetValueEx(key, "DisplayName",     0, winreg.REG_SZ,    "Focus Guard")
+                winreg.SetValueEx(key, "DisplayVersion",  0, winreg.REG_SZ,    "1.0")
+                winreg.SetValueEx(key, "Publisher",       0, winreg.REG_SZ,
+                                  "NACOMES — The Polytechnic, Ibadan (2026)")
+                winreg.SetValueEx(key, "InstallLocation", 0, winreg.REG_SZ,    INSTALL_DIR)
+                winreg.SetValueEx(key, "DisplayIcon",     0, winreg.REG_SZ,    f"{EXE_PATH},0")
+                winreg.SetValueEx(key, "UninstallString", 0, winreg.REG_SZ,    f'"{EXE_PATH}" --uninstall')
+                winreg.SetValueEx(key, "InstallDate",     0, winreg.REG_SZ,    _t.strftime("%Y%m%d"))
+                winreg.SetValueEx(key, "NoModify",        0, winreg.REG_DWORD, 1)
+                winreg.SetValueEx(key, "NoRepair",        0, winreg.REG_DWORD, 1)
+                try:
+                    kb = sum(os.path.getsize(os.path.join(INSTALL_DIR, f))
+                             for f in os.listdir(INSTALL_DIR)
+                             if os.path.isfile(os.path.join(INSTALL_DIR, f))) // 1024
+                    winreg.SetValueEx(key, "EstimatedSize", 0, winreg.REG_DWORD, kb)
+                except Exception:
+                    pass
+                winreg.CloseKey(key)
+                break   # Success — no need to try HKCU
+            except Exception:
+                continue
+    except Exception:
+        pass
+
+
+def _unregister_uninstall_entry():
+    try:
+        import winreg
+        key_path = r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\FocusGuard"
+        for root in (winreg.HKEY_LOCAL_MACHINE, winreg.HKEY_CURRENT_USER):
+            try:
+                winreg.DeleteKey(root, key_path)
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+
+# ── Repair / self-heal ────────────────────────────────────────────────────────
+
+def repair_if_needed():
+    """Called on every launch. Silently fixes shortcuts, startup path,
+    and updates the installed EXE when running a newer copy from USB."""
+    if not is_installed():
+        return
+    try:
+        # If running from USB/external path, update the installed EXE silently
+        if getattr(sys, 'frozen', False):
+            current_exe = os.path.normpath(sys.executable)
+            target_exe  = os.path.normpath(EXE_PATH)
+            if current_exe.lower() != target_exe.lower() and os.path.exists(current_exe):
+                try:
+                    shutil.copy2(current_exe, EXE_PATH)
+                except Exception:
+                    pass  # Locked if already running from Program Files — skip
+
+        # Ensure startup registry always points to installed EXE, not USB
+        set_startup(EXE_PATH)
+
+        # Re-create desktop shortcut if it disappeared
+        desktop = _get_desktop()
+        lnk = os.path.join(desktop, "Focus Guard.lnk")
+        exe_copy = os.path.join(desktop, "Focus Guard.exe")
+        if not os.path.exists(lnk) and not os.path.exists(exe_copy):
+            _create_desktop_shortcut()
+
+        # Re-create startup folder entry if missing
+        startup_lnk = os.path.join(_STARTUP_FOLDER, "FocusGuard.lnk")
+        if not os.path.exists(startup_lnk):
+            _create_startup_folder_entry()
+
+        # Ensure Programs & Features entry exists
+        try:
+            import winreg
+            key_path = r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\FocusGuard"
+            found = False
+            for root in (winreg.HKEY_LOCAL_MACHINE, winreg.HKEY_CURRENT_USER):
+                try:
+                    k = winreg.OpenKey(root, key_path)
+                    winreg.CloseKey(k)
+                    found = True
+                    break
+                except Exception:
+                    pass
+            if not found:
+                _register_uninstall_entry()
+        except Exception:
+            pass
+    except Exception:
+        pass

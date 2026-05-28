@@ -1,0 +1,6 @@
+wmi
+pywin32
+psutil
+plyer
+PySide6
+pyinstaller

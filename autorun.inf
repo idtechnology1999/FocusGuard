@@ -1,0 +1,5 @@
+[autorun]
+open=FocusGuard.exe
+icon=FocusGuard.exe
+action=Install Focus Guard
+label=Focus Guard USB Key

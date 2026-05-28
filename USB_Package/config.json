@@ -1,0 +1,40 @@
+{
+    "blocked_sites": [
+        "www.youtube.com",
+        "youtube.com",
+        "www.facebook.com",
+        "facebook.com",
+        "www.twitter.com",
+        "twitter.com",
+        "www.instagram.com",
+        "instagram.com",
+        "www.tiktok.com",
+        "tiktok.com",
+        "www.reddit.com",
+        "reddit.com",
+        "www.netflix.com",
+        "netflix.com"
+    ],
+    "registered_devices": [
+        "d9f44c1a92a8f1f096cd6f9d37a02eb6900eda52de1c2e42e8b25585af60f7a8"
+    ],
+    "session_log": [
+        {
+            "date": "2026-05-21",
+            "start": "20:54:57",
+            "duration_minutes": 2
+        },
+        {
+            "date": "2026-05-28",
+            "start": "20:55:52",
+            "duration_minutes": 2
+        },
+        {
+            "date": "2026-05-28",
+            "start": "20:58:51",
+            "duration_minutes": 2
+        }
+    ],
+    "active_session": null,
+    "first_run": false
+}

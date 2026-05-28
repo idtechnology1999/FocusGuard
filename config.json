@@ -1,0 +1,22 @@
+{
+    "blocked_sites": [
+        "www.youtube.com",
+        "youtube.com",
+        "www.facebook.com",
+        "facebook.com",
+        "www.twitter.com",
+        "twitter.com",
+        "www.instagram.com",
+        "instagram.com",
+        "www.tiktok.com",
+        "tiktok.com",
+        "www.reddit.com",
+        "reddit.com",
+        "www.netflix.com",
+        "netflix.com"
+    ],
+    "registered_devices": [],
+    "session_log": [],
+    "active_session": null,
+    "first_run": true
+}

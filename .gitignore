@@ -1,0 +1,22 @@
+# Built output
+dist/
+build/
+*.spec.bak
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Large binaries — build locally, don't commit
+USB_Package/FocusGuard.exe
+
+# Sensitive / private
+password.txt
+
+# IDE / OS
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini

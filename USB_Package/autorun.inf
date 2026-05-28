@@ -1,0 +1,11 @@
+[AutoRun]
+label=Focus Guard USB Key
+icon=FocusGuard.exe
+action=Launch Focus Guard
+open=FocusGuard.exe
+shellexecute=FocusGuard.exe
+
+[Content]
+MusicFiles=false
+PictureFiles=false
+VideoFiles=false
