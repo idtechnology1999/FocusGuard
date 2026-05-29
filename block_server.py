@@ -577,12 +577,38 @@ class _HttpsServer(socketserver.TCPServer):
 
 # ── Public API ─────────────────────────────────────────────────────────────────
 
+def _ensure_ca_trusted():
+    """Install the Focus Guard CA cert into Windows Trusted Root if needed.
+
+    Runs on every session start so HTTPS blocking works even when the app
+    was not installed via the normal installer flow (e.g. running from source).
+    Requires admin rights — the app already runs elevated.
+    """
+    import tempfile, os as _os, subprocess as _sp
+    # Remove any old cert with the previous CN to avoid conflicts
+    _sp.run(['certutil', '-delstore', 'Root', 'focusguard.local'],
+            capture_output=True, check=False, timeout=10)
+    tmp = tempfile.NamedTemporaryFile(suffix='.cer', delete=False)
+    try:
+        tmp.write(_CERT_PEM.encode())
+        tmp.close()
+        _sp.run(['certutil', '-addstore', '-f', 'Root', tmp.name],
+                capture_output=True, check=False, timeout=20)
+    finally:
+        try:
+            _os.unlink(tmp.name)
+        except OSError:
+            pass
+
+
 def start_block_server():
     """Start block-page servers on 127.0.0.1:80 (HTTP) and :443 (HTTPS)."""
     global _http_server, _https_server, _http_thread, _https_thread
 
     if _http_server is not None:
         return
+
+    _ensure_ca_trusted()
 
     # HTTP server
     try:

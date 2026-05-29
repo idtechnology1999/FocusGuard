@@ -36,15 +36,34 @@ def _write_hosts(lines):
         f.writelines(lines)
 
 
+def _expand_sites(sites):
+    """Add www. prefix for domains that don't already start with www. or a subdomain."""
+    expanded = list(sites)
+    for s in sites:
+        # Only add www. for bare apex domains (single dot, no existing subdomain)
+        if s.count('.') == 1 and not s.startswith('www.'):
+            www = 'www.' + s
+            if www not in expanded:
+                expanded.append(www)
+    return expanded
+
+
+def _flush_dns():
+    subprocess.run(['ipconfig', '/flushdns'],
+                   capture_output=True, check=False, timeout=10)
+
+
 def block_sites(sites=None):
     """Block sites via hosts file + firewall. Uses provided list or config fallback."""
     if not sites:
         sites = _fallback_sites()
+    sites = _expand_sites(sites)
     lines = _read_hosts()
     lines = [l for l in lines if BLOCK_MARKER not in l]
     for site in sites:
         lines.append(f"{REDIRECT_IP} {site} {BLOCK_MARKER}\n")
     _write_hosts(lines)
+    _flush_dns()
     _apply_firewall_rules(sites, block=True)
 
 
@@ -53,6 +72,7 @@ def unblock_sites(sites=None):
     lines = _read_hosts()
     lines = [l for l in lines if BLOCK_MARKER not in l]
     _write_hosts(lines)
+    _flush_dns()
     if not sites:
         sites = _fallback_sites()
     _apply_firewall_rules(sites, block=False)
