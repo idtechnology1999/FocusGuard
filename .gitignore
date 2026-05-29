@@ -20,3 +20,6 @@ password.txt
 .idea/
 Thumbs.db
 desktop.ini
+
+# Claude Code internal
+.claude/

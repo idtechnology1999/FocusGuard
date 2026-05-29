@@ -2,16 +2,105 @@
 Local block page server.
 
 During an active focus session, blocked sites are redirected to 127.0.0.1
-via the hosts file. This server listens on port 80 and serves a branded
-"This site is blocked" page instead of a browser error.
+via the hosts file.  Two servers run in parallel:
+
+  • port 80  — serves the block page for HTTP traffic
+  • port 443 — serves the same page over TLS for HTTPS traffic
+
+The TLS certificate is self-signed; browsers will show a "Not Private"
+warning on first visit, but the user can proceed to see the block page.
 """
 
+import os
+import ssl
+import tempfile
 import threading
 import socketserver
 import http.server
 
-_http_server  = None
-_server_thread = None
+_http_server   = None
+_https_server  = None
+_http_thread   = None
+_https_thread  = None
+
+# ── Embedded TLS certificate (self-signed, valid 10 years) ────────────────────
+# Generated once; embedded so no openssl binary is needed at runtime.
+
+_CERT_PEM = """\
+-----BEGIN CERTIFICATE-----
+MIIDZjCCAk6gAwIBAgIUFTlcX8ISpVid/dgnQqiPbaC7SB0wDQYJKoZIhvcNAQEL
+BQAwOjELMAkGA1UEBhMCTkcxEDAOBgNVBAoMB05BQ09NRVMxGTAXBgNVBAMMEGZv
+Y3VzZ3VhcmQubG9jYWwwHhcNMjYwNTI5MTIyODM5WhcNMzYwNTI2MTIyODM5WjA6
+MQswCQYDVQQGEwJORzEQMA4GA1UECgwHTkFDT01FUzEZMBcGA1UEAwwQZm9jdXNn
+dWFyZC5sb2NhbDCCASIwDQYJKoZIhvcNAQEBBQADggEPADCCAQoCggEBAJaYonGv
+nJrYTHsEJ8xNN3PzHVv0aJl/mZKnsKKdQ9xR8ty8JuHAjuuylW8AqkBJCVrq/PTP
+xqKrg4K2Y4+8LN2KK7SuPiRYhkDyKptLd9DSgsgAN7FCmeNGyT+1mnXP/XnF5IS6
+BSi7gpdCB+yV03GvriQwvjuJQg7rEsNwqvu5xsw016pHB1aV0p7k3OQG9YAgP9Ts
+jqSgP3KoVCxxGqxRVTM7ZhDiDo94WtYLrUi4DByhYFFPuOMG4xg2YjLduKNFo7D+
+HFJmdWcYLc/dWRXCvcJdo7MrHkEIpIk0xXV1NpRn+WwX7+KRKSJLpG/DFcR8NDB5
+uIHOpsfFT5ZpjLsCAwEAAaNkMGIwHQYDVR0OBBYEFFnvdk29fdKlTU30QFhpUuCj
+Hb7hMB8GA1UdIwQYMBaAFFnvdk29fdKlTU30QFhpUuCjHb7hMA8GA1UdEwEB/wQF
+MAMBAf8wDwYDVR0RBAgwBocEfwAAATANBgkqhkiG9w0BAQsFAAOCAQEANcvUpGVP
+KXuWIAvmph9jxAz/FC1rh+dBmIUZVRl9XyOqpcdi6zx7X1NUN3ly2eMOcoeIpEdU
+BzxqgqRnIyyY2VJ+FV40xBKx9l4RHjXj931r3NFY0192rKl7ywYnUTFyix/CYV6T
+DTgR0WJw9uGSKUL7tdhRCcbpVC3640cd2RMtyySmeLYIsIj9Ueev9JEPa9abZs7B
+HnwkwEwHf6qH06k72n92qI4vUOjmSB+6guMzXOQvEhmjd57WsQqDzE9j+x+5bGE2
+ixmVpKLZIM7qsJb/AHD1IJM/FCDGbos+0vCJosO4u4WfO9D2KTBA1g8iUbA4aqXu
+B3D241WqFB1TLA==
+-----END CERTIFICATE-----"""
+
+_KEY_PEM = """\
+-----BEGIN PRIVATE KEY-----
+MIIEvwIBADANBgkqhkiG9w0BAQEFAASCBKkwggSlAgEAAoIBAQCWmKJxr5ya2Ex7
+BCfMTTdz8x1b9GiZf5mSp7CinUPcUfLcvCbhwI7rspVvAKpASQla6vz0z8aiq4OC
+tmOPvCzdiiu0rj4kWIZA8iqbS3fQ0oLIADexQpnjRsk/tZp1z/15xeSEugUou4KX
+QgfsldNxr64kML47iUIO6xLDcKr7ucbMNNeqRwdWldKe5NzkBvWAID/U7I6koD9y
+qFQscRqsUVUzO2YQ4g6PeFrWC61IuAwcoWBRT7jjBuMYNmIy3bijRaOw/hxSZnVn
+GC3P3VkVwr3CXaOzKx5BCKSJNMV1dTaUZ/lsF+/ikSkiS6RvwxXEfDQwebiBzqbH
+xU+WaYy7AgMBAAECggEAA6FyaSM+t0z3qw+Slg5Wg+kckBb4XpsA7NQ2IfWAqVMg
+c8nldhPaXjxT9fUiJaKdIx//MTfBJjLUXNZg2BpFSqIGI7j/roij0/UCqfPL07D/
+jirTLObaJuyR9YM/Ug/NoJ3wwHJrpWu/3j2tSzrheiAuJpk2POE2Qn3QWf3hYWgz
+tAqfHP+30J1P8yZpSeKZqOFq7GOUyN8g3JfdotwKhJQXQdn3NA/8Q9xC2kSXU6eS
+LI9+cJ4/Gpxt/sLs710Ft1Ls1AzxU0HwEkdd5RoBgZScJZQT65clxjKPUfPY+wqw
+/X6xWGNcX0SA1PZH6sWJZ5bSKjv1WNnDCZp48nQIAQKBgQDObWGvz8F1PyeQAFs0
+iWECYC/W1tTI7uaNrdIBXbRHS4T+cYjE9uwr4B/FAVgiHl/zePBIozHTsBCF/Xaz
+N4QvH5pjOsNmf8qszk98tcWTbSudRgfJHQWOHfZPe8y6s9xC8NWggyDAgDw8cUKc
+2pM3Z6VPoMrCALE+BkojJ0tfAQKBgQC6wudiPoTKbCY6xGSlEMhfcRnrncSgC+/a
+pPZeCCWYTO63Ak9MhQdUxpeo3Td/dbPUkUZRV87fOirC/Ml0SCgbR/CS78kR0hRw
+a4IFR3ncaLvJ7wNNWqwloWWw/+5fMHnWcbggBqnwF6iDdjOpcAJ5E5FDA1l7O+mU
+SAqjiOInuwKBgQC1C9wcfWNYOL6zHozfhAnQMppim+LeJCGTazr/tbZyvTp0ixEA
+Zux2Asj6WRZ6Phe7i3t6yZ7e4dFsIwRjZLKLPfWDSDuufzA75Wpzn10c0yfodU5I
+xipkHcU0qwjBSxRIpb9HWxpzm0S5YkChH1b0xfOH5idOhZruIkgNkt4ZAQKBgQCo
+c7QQQSO1EOdKimndGM4ih/lBNARt91ZYeAJfvilqvblzCHpOIo8CQD366c1tAdU6
+He623+SQI/798NQkNhE2yiSL5AwQLtSQseeMq3OXAkCfWx43X1l2d6UpiS6QXUEH
+03qoKFqPXEd6i9r9MTKJ0sRrFVJYfSmpvXEbIBQckQKBgQCDilI/J0ht9cHbEvHD
+SDSuQ0g+HfOmI35tAzpiKoDuTa6iaxRThi7TNcru5wiHVol9p6iEMw52zWSAQ79i
+9empZ6Bm14qZRJk66VrtSkV2u23bFX3NKeElrAoivPQ6gvDwTXZ7ublS/lKTfVjc
+Jg1QRhwXHl0SkyelKxJpHnTbhg==
+-----END PRIVATE KEY-----"""
+
+
+def _make_ssl_context():
+    """Build an SSLContext from the embedded PEM strings."""
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    # ssl.SSLContext.load_cert_chain() requires file paths, so write to temp
+    # files then delete them immediately after loading into the context.
+    tmp_cert = tempfile.NamedTemporaryFile(suffix=".pem", delete=False)
+    tmp_key  = tempfile.NamedTemporaryFile(suffix=".pem", delete=False)
+    try:
+        tmp_cert.write(_CERT_PEM.encode())
+        tmp_cert.close()
+        tmp_key.write(_KEY_PEM.encode())
+        tmp_key.close()
+        ctx.load_cert_chain(certfile=tmp_cert.name, keyfile=tmp_key.name)
+    finally:
+        for path in (tmp_cert.name, tmp_key.name):
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+    return ctx
+
 
 # ── Block page HTML ────────────────────────────────────────────────────────────
 
@@ -360,30 +449,69 @@ class _BlockHandler(http.server.BaseHTTPRequestHandler):
         pass   # silence console output
 
 
+# ── HTTPS server (wraps each accepted socket with TLS) ────────────────────────
+
+class _HttpsServer(socketserver.TCPServer):
+    allow_reuse_address = True
+
+    def __init__(self, addr, handler, ssl_ctx):
+        self._ssl_ctx = ssl_ctx
+        super().__init__(addr, handler)
+
+    def get_request(self):
+        conn, addr = self.socket.accept()
+        try:
+            return self._ssl_ctx.wrap_socket(conn, server_side=True), addr
+        except ssl.SSLError:
+            conn.close()
+            raise   # caught as OSError by TCPServer._handle_request_noblock
+
+    def handle_error(self, request, client_address):
+        pass   # silence SSL handshake errors
+
+
 # ── Public API ─────────────────────────────────────────────────────────────────
 
 def start_block_server():
-    """Start the local block-page server on 127.0.0.1:80."""
-    global _http_server, _server_thread
+    """Start block-page servers on 127.0.0.1:80 (HTTP) and :443 (HTTPS)."""
+    global _http_server, _https_server, _http_thread, _https_thread
+
     if _http_server is not None:
         return
+
+    # HTTP server
     try:
         socketserver.TCPServer.allow_reuse_address = True
         srv = socketserver.TCPServer(("127.0.0.1", 80), _BlockHandler)
         _http_server = srv
-        _server_thread = threading.Thread(target=srv.serve_forever, daemon=True)
-        _server_thread.start()
+        _http_thread = threading.Thread(target=srv.serve_forever, daemon=True)
+        _http_thread.start()
     except Exception:
-        pass   # port 80 busy or permission issue — silently skip
+        pass
+
+    # HTTPS server
+    try:
+        ssl_ctx = _make_ssl_context()
+        srv = _HttpsServer(("127.0.0.1", 443), _BlockHandler, ssl_ctx)
+        _https_server = srv
+        _https_thread = threading.Thread(target=srv.serve_forever, daemon=True)
+        _https_thread.start()
+    except Exception:
+        pass
 
 
 def stop_block_server():
-    """Shut down the block-page server."""
-    global _http_server, _server_thread
-    if _http_server:
-        try:
-            _http_server.shutdown()
-        except Exception:
-            pass
-        _http_server  = None
-        _server_thread = None
+    """Shut down both block-page servers."""
+    global _http_server, _https_server, _http_thread, _https_thread
+
+    for attr in ("_http_server", "_https_server"):
+        srv = globals()[attr]
+        if srv:
+            try:
+                srv.shutdown()
+            except Exception:
+                pass
+    _http_server  = None
+    _https_server = None
+    _http_thread  = None
+    _https_thread = None
