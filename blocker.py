@@ -4,7 +4,7 @@ import subprocess
 import json
 
 HOSTS_PATH   = r"C:\Windows\System32\drivers\etc\hosts"
-REDIRECT_IP  = "0.0.0.0"
+REDIRECT_IP  = "127.0.0.1"
 BLOCK_MARKER = "# FocusGuard"
 
 _INSTALL_CONFIG = os.path.join(

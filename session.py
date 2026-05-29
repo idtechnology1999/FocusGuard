@@ -5,6 +5,7 @@ import os
 import sys
 from datetime import datetime
 from blocker import block_sites, unblock_sites
+from block_server import start_block_server, stop_block_server
 
 _INSTALL_CONFIG = os.path.join(
     os.getenv("PROGRAMFILES", "C:\\Program Files"), "FocusGuard", "config.json"
@@ -82,6 +83,7 @@ class FocusSession:
         self.active = True
         if not resume:
             block_sites(self.sites)
+        start_block_server()
         self._persist()
         _register_startup()
         _register_watchdog()
@@ -101,6 +103,7 @@ class FocusSession:
     def _end_session(self):
         self.active = False
         unblock_sites(self.sites)
+        stop_block_server()
         self._clear_persisted()
         _unregister_startup()
         _unregister_watchdog()
