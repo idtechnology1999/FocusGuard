@@ -76,6 +76,7 @@ def install_to_computer():
         _register_autoplay_handler()
         _register_uninstall_entry()
         set_startup(EXE_PATH)   # Always point startup to installed EXE
+        _install_trusted_cert()
 
         return True, None
     except Exception as e:
@@ -375,6 +376,7 @@ def uninstall():
         _unregister_task_scheduler()
         _unregister_autoplay_handler()
         _unregister_uninstall_entry()
+        _uninstall_trusted_cert()
         if os.path.exists(INSTALL_DIR):
             shutil.rmtree(INSTALL_DIR)
         desktop = _get_desktop()
@@ -441,6 +443,45 @@ def _unregister_uninstall_entry():
                 winreg.DeleteKey(root, key_path)
             except Exception:
                 pass
+    except Exception:
+        pass
+
+
+# ── Trusted CA certificate ────────────────────────────────────────────────────
+
+_CERT_STORE_CN = "focusguard.local"   # matches CN in block_server._CERT_PEM
+
+
+def _install_trusted_cert():
+    """Add the Focus Guard self-signed cert to Windows Trusted Root CAs.
+
+    This makes the HTTPS block page load without a browser warning.
+    Requires admin rights, which Focus Guard already runs with.
+    """
+    try:
+        from block_server import _CERT_PEM
+        tmp = os.path.join(os.environ.get("TEMP", "C:\\Temp"), "fg_ca.cer")
+        with open(tmp, "w") as f:
+            f.write(_CERT_PEM)
+        subprocess.run(
+            ["certutil", "-addstore", "-f", "Root", tmp],
+            capture_output=True, check=False, timeout=20
+        )
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+    except Exception:
+        pass
+
+
+def _uninstall_trusted_cert():
+    """Remove the Focus Guard CA cert from Windows Trusted Root CAs."""
+    try:
+        subprocess.run(
+            ["certutil", "-delstore", "Root", _CERT_STORE_CN],
+            capture_output=True, check=False, timeout=20
+        )
     except Exception:
         pass
 
