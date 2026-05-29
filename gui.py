@@ -695,7 +695,7 @@ class FocusGuardApp(QMainWindow):
     # ── Logo loading ───────────────────────────────────────────────────────────
 
     def _load_logos(self):
-        path = _asset(os.path.join("image", "focus logo.png"))
+        path = _asset(os.path.join("image", "logo.png"))
         for sz in [44, 80, 120, 160]:
             px = _load_pixmap(path, sz, sz)
             if px:
