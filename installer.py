@@ -287,25 +287,41 @@ def _unregister_task_scheduler():
 # ── AutoPlay handler ───────────────────────────────────────────────────────────
 
 def _register_autoplay_handler():
-    """Register Focus Guard in AutoPlay so inserting the USB offers 'Launch Focus Guard'."""
+    """Register Focus Guard as the DEFAULT AutoPlay action for USB storage.
+
+    After this runs, inserting the flash drive automatically opens the
+    installed Focus Guard app — no dialog, no click required.
+    Called both at install time and on every launch so the EXE path
+    stays current after updates.
+    """
     try:
         import winreg
         exe = EXE_PATH if getattr(sys, 'frozen', False) else _get_target()
 
-        # Register the handler definition
-        hpath = r"SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\AutoplayHandlers\Handlers\FocusGuardHandler"
-        hkey = winreg.CreateKey(winreg.HKEY_CURRENT_USER, hpath)
-        winreg.SetValueEx(hkey, "Action",        0, winreg.REG_SZ, "Launch Focus Guard")
-        winreg.SetValueEx(hkey, "Provider",       0, winreg.REG_SZ, "Focus Guard")
-        winreg.SetValueEx(hkey, "DefaultIcon",    0, winreg.REG_SZ, f"{exe},0")
-        winreg.SetValueEx(hkey, "InvokeProgram",  0, winreg.REG_SZ, exe)
-        winreg.CloseKey(hkey)
+        # 1. Register the handler definition
+        h = winreg.CreateKey(winreg.HKEY_CURRENT_USER,
+            r"SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer"
+            r"\AutoplayHandlers\Handlers\FocusGuardHandler")
+        winreg.SetValueEx(h, "Action",        0, winreg.REG_SZ, "Open Focus Guard")
+        winreg.SetValueEx(h, "Provider",       0, winreg.REG_SZ, "Focus Guard")
+        winreg.SetValueEx(h, "DefaultIcon",    0, winreg.REG_SZ, f"{exe},0")
+        winreg.SetValueEx(h, "InvokeProgram",  0, winreg.REG_SZ, exe)
+        winreg.CloseKey(h)
 
-        # Bind handler to USB/storage arrival event
-        epath = r"SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\AutoplayHandlers\EventHandlers\StorageOnArrival"
-        ekey = winreg.CreateKey(winreg.HKEY_CURRENT_USER, epath)
-        winreg.SetValueEx(ekey, "FocusGuardHandler", 0, winreg.REG_SZ, "")
-        winreg.CloseKey(ekey)
+        # 2. Bind to USB/storage arrival event
+        h = winreg.CreateKey(winreg.HKEY_CURRENT_USER,
+            r"SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer"
+            r"\AutoplayHandlers\EventHandlers\StorageOnArrival")
+        winreg.SetValueEx(h, "FocusGuardHandler", 0, winreg.REG_SZ, "")
+        winreg.CloseKey(h)
+
+        # 3. Set as DEFAULT — skip the dialog, auto-launch on every insert
+        h = winreg.CreateKey(winreg.HKEY_CURRENT_USER,
+            r"SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer"
+            r"\AutoplayHandlers\UserChosenExecuteHandlers\StorageOnArrival")
+        winreg.SetValueEx(h, "", 0, winreg.REG_SZ, "FocusGuardHandler")
+        winreg.CloseKey(h)
+
     except Exception:
         pass
 
@@ -562,6 +578,9 @@ def repair_if_needed():
 
         # Ensure startup registry always points to installed EXE, not USB
         set_startup(EXE_PATH)
+
+        # Re-register AutoPlay default so inserting the flash always opens the app
+        _register_autoplay_handler()
 
         # Re-create desktop shortcut if it disappeared
         desktop = _get_desktop()
