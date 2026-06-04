@@ -1,7 +1,7 @@
 [AutoRun]
-label=Focus Guard USB Key
-icon=FocusGuard.exe
-action=Launch Focus Guard
+label=Focus Guard
+icon=FocusGuard.exe,0
+action=Run Focus Guard
 open=FocusGuard.exe
 shellexecute=FocusGuard.exe
 
