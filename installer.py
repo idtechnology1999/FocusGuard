@@ -73,6 +73,7 @@ def install_to_computer():
         _create_startmenu_shortcut()
         _register_task_scheduler()
         _register_autoplay_handler()
+        _enable_driver_event_log()
         _register_usb_launch_task()
         _register_uninstall_entry()
         set_startup(EXE_PATH)
@@ -268,11 +269,13 @@ def _register_usb_launch_task():
     try:
         exe_ps = EXE_PATH.replace("'", "''")   # escape for PowerShell single-quoted string
 
+        # No -Verb RunAs here — the task itself runs at HighestAvailable (admin)
+        # so adding -Verb RunAs would trigger an unwanted UAC prompt.
         ps_cmd = (
             f"Start-Sleep 2; "
             f"if ((Test-Path '{exe_ps}') -and "
             f"-not (Get-Process FocusGuard -ErrorAction SilentlyContinue)) "
-            f"{{ Start-Process '{exe_ps}' -Verb RunAs }}"
+            f"{{ Start-Process '{exe_ps}' }}"
         )
 
         # Inner event-subscription XML embedded as text inside the outer XML —
@@ -334,6 +337,24 @@ def _register_usb_launch_task():
                 os.unlink(tmp.name)
             except OSError:
                 pass
+    except Exception:
+        pass
+
+
+def _enable_driver_event_log():
+    """Enable the DriverFrameworks event log used by the USB launch task trigger.
+
+    This log is disabled by default on many Windows machines.  Without it the
+    FocusGuardUSBLaunch task never fires because its event trigger has nothing
+    to listen to.
+    """
+    try:
+        subprocess.run(
+            ['wevtutil', 'set-log',
+             'Microsoft-Windows-DriverFrameworks-UserMode/Operational',
+             '/enabled:true'],
+            capture_output=True, check=False, timeout=15
+        )
     except Exception:
         pass
 
@@ -675,6 +696,7 @@ def repair_if_needed():
 
         # Re-register AutoPlay default so inserting the flash always opens the app
         _register_autoplay_handler()
+        _enable_driver_event_log()
 
         # Re-create desktop shortcut if it disappeared
         desktop = _get_desktop()
