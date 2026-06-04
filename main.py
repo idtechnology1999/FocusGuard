@@ -92,9 +92,13 @@ def main():
     resume_info = get_active_session()
     if resume_info:
         block_sites(resume_info.get("sites") or [])
-        repair_if_needed()   # Fix startup path / shortcuts while we're here
+        repair_if_needed()
+        # Start silently — tray only, no window popup.
+        # The user sees the red padlock tray icon with remaining time.
+        # They can click it to open the session screen.
+        app.setQuitOnLastWindowClosed(False)
         window = FocusGuardApp(resume_info=resume_info)
-        window.show()
+        # window stays hidden; tray icon is shown inside FocusGuardApp.__init__
         sys.exit(app.exec())
 
     # ── 4. Installation flow ─────────────────────────────────────────────────
