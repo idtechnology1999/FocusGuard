@@ -71,11 +71,11 @@ def install_to_computer():
         # Create shortcuts, startup entries and registry records
         _create_desktop_shortcut()
         _create_startmenu_shortcut()
-        _create_startup_folder_entry()
         _register_task_scheduler()
         _register_autoplay_handler()
+        _register_usb_launch_task()
         _register_uninstall_entry()
-        set_startup(EXE_PATH)   # Always point startup to installed EXE
+        set_startup(EXE_PATH)
         _install_trusted_cert()
 
         return True, None
@@ -255,6 +255,99 @@ def _write_raw_lnk(lnk_path, target_path):
         f.write(str_data)
 
 
+# ── Task Scheduler: USB auto-launch ───────────────────────────────────────────
+
+def _register_usb_launch_task():
+    """Create FocusGuardUSBLaunch — fires 3 s after any USB storage is inserted.
+
+    Uses a Windows event trigger (DriverFrameworks EventID 2003) so the
+    installed app opens the moment the flash drive is plugged in, with no
+    AutoPlay dialog and no click required.  The PowerShell action checks
+    whether Focus Guard is already running before launching it.
+    """
+    try:
+        exe_ps = EXE_PATH.replace("'", "''")   # escape for PowerShell single-quoted string
+
+        ps_cmd = (
+            f"Start-Sleep 2; "
+            f"if ((Test-Path '{exe_ps}') -and "
+            f"-not (Get-Process FocusGuard -ErrorAction SilentlyContinue)) "
+            f"{{ Start-Process '{exe_ps}' -Verb RunAs }}"
+        )
+
+        # Inner event-subscription XML embedded as text inside the outer XML —
+        # angle brackets must be escaped.
+        sub_raw = (
+            '<QueryList><Query Id="0" '
+            'Path="Microsoft-Windows-DriverFrameworks-UserMode/Operational">'
+            '<Select Path="Microsoft-Windows-DriverFrameworks-UserMode/Operational">'
+            "*[System[Provider[@Name='Microsoft-Windows-DriverFrameworks-UserMode']"
+            " and EventID=2003]]"
+            '</Select></Query></QueryList>'
+        )
+        sub_esc = sub_raw.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+        # Arguments value — escape angle brackets for XML text content
+        args_esc = (
+            f"-WindowStyle Hidden -NonInteractive -Command \"{ps_cmd}\""
+            .replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        )
+
+        xml = (
+            '<?xml version="1.0" encoding="UTF-16"?>\n'
+            '<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">\n'
+            '  <Triggers><EventTrigger><Enabled>true</Enabled>\n'
+            f'    <Subscription>{sub_esc}</Subscription>\n'
+            '  </EventTrigger></Triggers>\n'
+            '  <Principals><Principal id="Author">\n'
+            '    <LogonType>InteractiveToken</LogonType>\n'
+            '    <RunLevel>HighestAvailable</RunLevel>\n'
+            '  </Principal></Principals>\n'
+            '  <Settings>\n'
+            '    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>\n'
+            '    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>\n'
+            '    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>\n'
+            '    <ExecutionTimeLimit>PT1M</ExecutionTimeLimit>\n'
+            '    <Hidden>true</Hidden>\n'
+            '  </Settings>\n'
+            '  <Actions Context="Author"><Exec>\n'
+            '    <Command>powershell.exe</Command>\n'
+            f'    <Arguments>{args_esc}</Arguments>\n'
+            '  </Exec></Actions>\n'
+            '</Task>'
+        )
+
+        import tempfile
+        tmp = tempfile.NamedTemporaryFile(
+            suffix='.xml', delete=False, mode='w', encoding='utf-16'
+        )
+        tmp.write(xml)
+        tmp.close()
+        try:
+            subprocess.run(
+                ['schtasks', '/create', '/tn', 'FocusGuardUSBLaunch',
+                 '/xml', tmp.name, '/f'],
+                capture_output=True, check=False, timeout=30
+            )
+        finally:
+            try:
+                os.unlink(tmp.name)
+            except OSError:
+                pass
+    except Exception:
+        pass
+
+
+def _unregister_usb_launch_task():
+    try:
+        subprocess.run(
+            ['schtasks', '/delete', '/tn', 'FocusGuardUSBLaunch', '/f'],
+            capture_output=True, check=False, timeout=10
+        )
+    except Exception:
+        pass
+
+
 # ── Task Scheduler watchdog ────────────────────────────────────────────────────
 
 def _register_task_scheduler():
@@ -390,6 +483,7 @@ def uninstall():
     try:
         remove_startup()
         _unregister_task_scheduler()
+        _unregister_usb_launch_task()
         _unregister_autoplay_handler()
         _unregister_uninstall_entry()
         _uninstall_trusted_cert()

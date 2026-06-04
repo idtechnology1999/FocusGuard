@@ -12,6 +12,22 @@ from session import get_active_session
 from blocker import block_sites
 from gui import FocusGuardApp, WelcomeDialog
 
+# Keep the mutex handle alive for the process lifetime — releasing it would
+# allow a second instance to start.
+_MUTEX = None
+
+
+def _ensure_single_instance():
+    """Exit silently if another instance of Focus Guard is already running."""
+    global _MUTEX
+    _MUTEX = ctypes.windll.kernel32.CreateMutexW(
+        None, False, "Global\\FocusGuardSingleInstance"
+    )
+    if ctypes.windll.kernel32.GetLastError() == 183:   # ERROR_ALREADY_EXISTS
+        ctypes.windll.kernel32.CloseHandle(_MUTEX)
+        _MUTEX = None
+        sys.exit(0)
+
 
 def _cfg_path():
     base = os.path.dirname(sys.executable) if getattr(sys, 'frozen', False) \
@@ -63,6 +79,7 @@ def _close_splash():
 
 
 def main():
+    _ensure_single_instance()   # Exit immediately if already running
     _close_splash()
     app = QApplication(sys.argv)
     app.setStyle("Fusion")

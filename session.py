@@ -40,10 +40,13 @@ def get_active_session():
         remaining = s["end_unix"] - time.time()
         if remaining > 0:
             return s
-        # Expired — unblock and clear
+        # Expired — full cleanup so nothing lingers after the timer runs out
         unblock_sites(s.get("sites") or [])
+        stop_block_server()
         cfg["active_session"] = None
         _save_config(cfg)
+        _unregister_startup()
+        _unregister_watchdog()
         return None
     except Exception:
         return None
