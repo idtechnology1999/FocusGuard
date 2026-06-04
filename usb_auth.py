@@ -29,8 +29,18 @@ def _save_config(config):
 
 
 def _device_id(device):
-    """Generate a unique fingerprint for a USB device."""
-    raw = f"{device.DeviceID}-{device.Manufacturer}-{device.Name}"
+    """Generate a stable fingerprint for a USB device.
+
+    PNPDeviceID contains the USB VID, PID and serial number — it stays the
+    same regardless of which port the drive is plugged into or how many other
+    drives are connected.  Fall back to the old fields only if PNPDeviceID is
+    blank (very rare on modern hardware).
+    """
+    pnp = getattr(device, "PNPDeviceID", None) or ""
+    if pnp:
+        raw = pnp
+    else:
+        raw = f"{device.DeviceID}-{device.Manufacturer}-{device.Name}"
     return hashlib.sha256(raw.encode()).hexdigest()
 
 

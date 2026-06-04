@@ -867,6 +867,8 @@ class FocusGuardApp(QMainWindow):
         self._type_lbl.setFont(QFont("Segoe UI", 12))
         self._type_lbl.setAlignment(Qt.AlignCenter)
         self._type_lbl.setMinimumHeight(28)
+        self._type_lbl.setCursor(QCursor(Qt.PointingHandCursor))
+        self._type_lbl.mousePressEvent = self._lock_label_clicked
         card_l.addWidget(self._type_lbl)
         card_l.addSpacing(18)
 
@@ -1490,7 +1492,9 @@ class FocusGuardApp(QMainWindow):
 
     # ── ANIMATIONS ─────────────────────────────────────────────────────────────
 
-    _HINT = "⏳   Insert your USB key to unlock"
+    _HINT_DEFAULT  = "Insert your USB key to unlock"
+    _HINT_REGISTER = "New USB detected  —  click here to register it"
+    _HINT = _HINT_DEFAULT
 
     def _animate(self):
         self._pulse_val += 0.035 * self._pulse_dir
@@ -1627,6 +1631,15 @@ class FocusGuardApp(QMainWindow):
             self._usb_dot.setStyleSheet(f"color: {T['red']}; background: transparent;")
             self._usb_lbl.setStyleSheet(f"color: {T['text_mid']}; background: transparent;")
             self._usb_lbl.setText("No USB Detected")
+            # Reset flag so dialog fires again on next insert
+            self._ask_reg = False
+
+        # Update lock screen typewriter hint based on USB state
+        if self._state == "locked":
+            new_hint = self._HINT_REGISTER if (dev and is_new) else self._HINT_DEFAULT
+            if new_hint != self._HINT:
+                self._HINT   = new_hint
+                self._type_i = 0   # restart typewriter with new text
 
         if self._state == "locked":
             if self._usb_ok:
@@ -1646,6 +1659,13 @@ class FocusGuardApp(QMainWindow):
             # Session cannot be stopped regardless of USB state
             self._susb.setText("🔒  Session locked\nTimer expiry is the only exit")
             self._susb.setStyleSheet(f"color: {T['amber']}; background: transparent;")
+
+    def _lock_label_clicked(self, _event):
+        """Allow tapping the lock screen hint text to trigger USB registration."""
+        dev, is_new = detect_focus_guard_usb()
+        if dev and is_new and not self._ask_reg:
+            self._ask_reg = True
+            self._do_register()
 
     def _do_register(self):
         reply = QMessageBox.question(
