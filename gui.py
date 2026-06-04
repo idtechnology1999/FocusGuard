@@ -1493,7 +1493,7 @@ class FocusGuardApp(QMainWindow):
     # ── ANIMATIONS ─────────────────────────────────────────────────────────────
 
     _HINT_DEFAULT  = "Insert your USB key to unlock"
-    _HINT_REGISTER = "New USB detected  —  click here to register it"
+    _HINT_REGISTER = "USB detected  —  unlocking..."
     _HINT = _HINT_DEFAULT
 
     def _animate(self):
@@ -1644,9 +1644,16 @@ class FocusGuardApp(QMainWindow):
         if self._state == "locked":
             if self._usb_ok:
                 self._fade_switch("dashboard")
-            elif dev and is_new and not self._ask_reg:
-                self._ask_reg = True
-                QTimer.singleShot(200, self._do_register)
+            elif dev and is_new:
+                # Auto-register silently on the lock screen — no blocking dialog.
+                # Anyone holding the USB in their hand should get in; the lock
+                # screen enforces physical presence, not identity.
+                register_device(dev)
+                self._usb_ok = True
+                self._fade_switch("dashboard")
+                usb_drive = get_usb_drive_path()
+                if usb_drive and not is_protected(usb_drive):
+                    QTimer.singleShot(800, lambda d=usb_drive: self._offer_protection(d))
 
         elif self._state == "dashboard":
             if not self._usb_ok and dev is None:
@@ -1661,11 +1668,8 @@ class FocusGuardApp(QMainWindow):
             self._susb.setStyleSheet(f"color: {T['amber']}; background: transparent;")
 
     def _lock_label_clicked(self, _event):
-        """Allow tapping the lock screen hint text to trigger USB registration."""
-        dev, is_new = detect_focus_guard_usb()
-        if dev and is_new and not self._ask_reg:
-            self._ask_reg = True
-            self._do_register()
+        """Tapping the lock screen hint nudges the USB poll immediately."""
+        self._poll_usb()
 
     def _do_register(self):
         reply = QMessageBox.question(
@@ -1686,6 +1690,17 @@ class FocusGuardApp(QMainWindow):
                     "✅  File protection has been applied.\n"
                     "    No file on this USB can be deleted.")
         self._ask_reg = False
+
+    def _offer_protection(self, usb_drive):
+        """Offer USB write-protection after silent auto-registration."""
+        reply = QMessageBox.question(
+            self, "Protect USB Key",
+            "Your USB key has been registered.\n\n"
+            "Would you like to enable write-protection?\n"
+            "This prevents files on the USB from being deleted.",
+            QMessageBox.Yes | QMessageBox.No)
+        if reply == QMessageBox.Yes:
+            protect(usb_drive)
 
     def _usb_protection_dialog(self):
         """Show USB protection status and allow enabling / removing protection."""
