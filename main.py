@@ -5,13 +5,13 @@ import json
 
 from PySide6.QtWidgets import QApplication, QMessageBox
 
-from installer import uninstall
+from installer import (is_installed, install_to_computer,
+                       repair_if_needed, uninstall)
+from usb_auth import detect_focus_guard_usb, register_device
 from session import get_active_session
 from blocker import block_sites
 from gui import FocusGuardApp, WelcomeDialog
 
-
-# ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _cfg_path():
     base = os.path.dirname(sys.executable) if getattr(sys, 'frozen', False) \
@@ -34,49 +34,6 @@ def _mark_first_run_done(cfg_path: str):
         cfg["first_run"] = False
         with open(cfg_path, "w") as f:
             json.dump(cfg, f, indent=4)
-    except Exception:
-        pass
-
-
-def _register_autoplay():
-    """Register Focus Guard as the AutoPlay handler for USB storage arrival.
-
-    Called on every launch so the stored EXE path stays current even when
-    the flash drive is assigned a different letter on a new PC.
-
-    After the first run the handler is set as the DEFAULT action for storage
-    arrival — meaning Windows will auto-launch Focus Guard the next time the
-    flash is inserted, with no dialog and no click required.
-    """
-    try:
-        import winreg
-        exe = sys.executable if getattr(sys, 'frozen', False) \
-              else os.path.abspath(__file__)
-
-        # 1. Handler definition
-        h = winreg.CreateKey(winreg.HKEY_CURRENT_USER,
-            r"SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer"
-            r"\AutoplayHandlers\Handlers\FocusGuardHandler")
-        winreg.SetValueEx(h, "Action",        0, winreg.REG_SZ, "Run Focus Guard")
-        winreg.SetValueEx(h, "Provider",       0, winreg.REG_SZ, "Focus Guard")
-        winreg.SetValueEx(h, "DefaultIcon",    0, winreg.REG_SZ, f"{exe},0")
-        winreg.SetValueEx(h, "InvokeProgram",  0, winreg.REG_SZ, exe)
-        winreg.CloseKey(h)
-
-        # 2. Bind handler to USB/storage arrival event
-        h = winreg.CreateKey(winreg.HKEY_CURRENT_USER,
-            r"SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer"
-            r"\AutoplayHandlers\EventHandlers\StorageOnArrival")
-        winreg.SetValueEx(h, "FocusGuardHandler", 0, winreg.REG_SZ, "")
-        winreg.CloseKey(h)
-
-        # 3. Set as DEFAULT — future USB inserts skip the dialog entirely
-        h = winreg.CreateKey(winreg.HKEY_CURRENT_USER,
-            r"SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer"
-            r"\AutoplayHandlers\UserChosenExecuteHandlers\StorageOnArrival")
-        winreg.SetValueEx(h, "", 0, winreg.REG_SZ, "FocusGuardHandler")
-        winreg.CloseKey(h)
-
     except Exception:
         pass
 
@@ -105,46 +62,76 @@ def _close_splash():
         pass
 
 
-# ── Entry point ───────────────────────────────────────────────────────────────
-
 def main():
     _close_splash()
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
 
-    # ── 1. Cleanup handler ────────────────────────────────────────────────────
+    # ── 1. Uninstall handler (called by Programs & Features "Uninstall") ──────
     if "--uninstall" in sys.argv:
-        reply = QMessageBox.question(None, "Remove Focus Guard",
-            "Remove Focus Guard from this computer?\n\n"
-            "Startup entries and scheduled tasks will be deleted.",
+        reply = QMessageBox.question(None, "Uninstall Focus Guard",
+            "Are you sure you want to uninstall Focus Guard?\n\n"
+            "All shortcuts and startup entries will be removed.",
             QMessageBox.Yes | QMessageBox.No)
         if reply == QMessageBox.Yes:
             uninstall()
-            QMessageBox.information(None, "Removed",
+            QMessageBox.information(None, "Uninstalled",
                 "Focus Guard has been removed from this computer.")
         sys.exit(0)
 
-    # ── 2. Admin elevation ────────────────────────────────────────────────────
+    # ── 2. Admin check ────────────────────────────────────────────────────────
     if not is_admin():
         if request_admin_and_restart():
             sys.exit()
         QMessageBox.critical(None, "Administrator Required",
             "Focus Guard needs Administrator privileges to block websites.\n\n"
-            "Right-click the EXE → Run as Administrator.")
+            "Right-click → Run as Administrator.")
         sys.exit(1)
 
-    # ── 3. Register AutoPlay so next USB insert launches this EXE directly ────
-    _register_autoplay()
-
-    # ── 4. Resume a session that survived a reboot ────────────────────────────
+    # ── 3. Check for active session that survived a reboot ───────────────────
     resume_info = get_active_session()
     if resume_info:
         block_sites(resume_info.get("sites") or [])
+        repair_if_needed()   # Fix startup path / shortcuts while we're here
         window = FocusGuardApp(resume_info=resume_info)
         window.show()
         sys.exit(app.exec())
 
-    # ── 5. First-run welcome ──────────────────────────────────────────────────
+    # ── 4. Installation flow ─────────────────────────────────────────────────
+    installed = is_installed()
+
+    if not installed:
+        reply = QMessageBox.question(None, "Install Focus Guard",
+            "Focus Guard is not installed on this computer.\n\n"
+            "Install it now?\n\n"
+            "After installation you can open Focus Guard from\n"
+            "your Desktop — no USB needed to launch the app.\n\n"
+            "The USB key is only required to start and stop sessions.",
+            QMessageBox.Yes | QMessageBox.No)
+        if reply == QMessageBox.Yes:
+            success, err = install_to_computer()
+            if success:
+                QMessageBox.information(None, "Installation Complete",
+                    "Focus Guard has been installed!\n\n"
+                    "✔  Desktop shortcut created\n"
+                    "✔  Start Menu entry created\n"
+                    "✔  Listed in Programs & Features\n\n"
+                    "You can now open Focus Guard from your Desktop\n"
+                    "without the USB. Insert the USB key only when\n"
+                    "you want to start a focus session.")
+                installed = True
+            else:
+                QMessageBox.critical(None, "Installation Failed",
+                    f"Could not install Focus Guard.\n\n{err or ''}\n\n"
+                    "Try running as Administrator.")
+                sys.exit(1)
+        else:
+            sys.exit()
+    else:
+        # Already installed — silently repair missing shortcuts/startup entries
+        repair_if_needed()
+
+    # ── 5. First-run welcome screen ───────────────────────────────────────────
     cfg_path = _cfg_path()
     if _is_first_run(cfg_path):
         dlg = WelcomeDialog()
@@ -153,7 +140,7 @@ def main():
             sys.exit()
         _mark_first_run_done(cfg_path)
 
-    # ── 6. Launch ─────────────────────────────────────────────────────────────
+    # ── 6. Launch app ─────────────────────────────────────────────────────────
     window = FocusGuardApp()
     window.show()
     sys.exit(app.exec())
