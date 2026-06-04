@@ -486,6 +486,65 @@ def _uninstall_trusted_cert():
         pass
 
 
+# ── EXE self-update ───────────────────────────────────────────────────────────
+
+def _update_installed_exe(src, dst):
+    """Replace the installed EXE with a newer copy from the USB.
+
+    Tries three escalating strategies so the update survives even when
+    Windows still has the old EXE's image in memory:
+
+    1. Direct copy  — works when no process holds the file open.
+    2. Kill + copy  — terminates any running installed-app process first,
+                      then retries the copy.
+    3. MoveFileEx   — schedules the replacement at next Windows boot if the
+                      file is still locked (e.g. antivirus, Defender cache).
+    """
+    import time, ctypes
+
+    # Skip if already the same file (no update needed)
+    try:
+        if os.path.getsize(src) == os.path.getsize(dst):
+            return
+    except OSError:
+        pass
+
+    # Strategy 1 — plain copy (most common success path)
+    for _ in range(2):
+        try:
+            shutil.copy2(src, dst)
+            return
+        except Exception:
+            time.sleep(0.4)
+
+    # Strategy 2 — kill any running installed instance, then copy
+    try:
+        import psutil
+        for proc in psutil.process_iter(["exe"]):
+            try:
+                if os.path.normpath(proc.info["exe"]).lower() == dst.lower():
+                    proc.kill()
+                    time.sleep(0.8)
+                    break
+            except Exception:
+                pass
+        shutil.copy2(src, dst)
+        return
+    except Exception:
+        pass
+
+    # Strategy 3 — schedule replacement on next reboot via MoveFileEx
+    try:
+        MOVEFILE_REPLACE_EXISTING  = 0x1
+        MOVEFILE_DELAY_UNTIL_REBOOT = 0x4
+        ctypes.windll.kernel32.MoveFileExW(
+            src, dst,
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_DELAY_UNTIL_REBOOT
+        )
+    except Exception:
+        pass
+
+
 # ── Repair / self-heal ────────────────────────────────────────────────────────
 
 def repair_if_needed():
@@ -499,10 +558,7 @@ def repair_if_needed():
             current_exe = os.path.normpath(sys.executable)
             target_exe  = os.path.normpath(EXE_PATH)
             if current_exe.lower() != target_exe.lower() and os.path.exists(current_exe):
-                try:
-                    shutil.copy2(current_exe, EXE_PATH)
-                except Exception:
-                    pass  # Locked if already running from Program Files — skip
+                _update_installed_exe(current_exe, target_exe)
 
         # Ensure startup registry always points to installed EXE, not USB
         set_startup(EXE_PATH)
