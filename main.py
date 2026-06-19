@@ -80,9 +80,26 @@ def _close_splash():
 
 def main():
     _ensure_single_instance()   # Exit immediately if already running
+
+    # If woken by the USB event task, only continue when the Focus Guard USB
+    # (a drive that contains FocusGuard.exe) is actually the inserted device.
+    # Any other USB (camera, random flash drive, etc.) exits here silently.
+    if "--usb-trigger" in sys.argv:
+        from usb_auth import get_usb_drive_path
+        drive = get_usb_drive_path()
+        has_exe = drive and (
+            os.path.exists(os.path.join(drive, "FocusGuard.exe")) or
+            os.path.exists(os.path.join(drive, "FocusGuard_installed", "FocusGuard.exe"))
+        )
+        if not has_exe:
+            sys.exit(0)
+
     _close_splash()
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
+    # Keep the process alive even when every window is closed (tray-only mode).
+    # The app must NEVER exit just because a window hides or transitions.
+    app.setQuitOnLastWindowClosed(False)
 
     # ── 1. Uninstall handler (called by Programs & Features "Uninstall") ──────
     if "--uninstall" in sys.argv:
@@ -113,7 +130,6 @@ def main():
         # Start silently — tray only, no window popup.
         # The user sees the red padlock tray icon with remaining time.
         # They can click it to open the session screen.
-        app.setQuitOnLastWindowClosed(False)
         window = FocusGuardApp(resume_info=resume_info)
         # window stays hidden; tray icon is shown inside FocusGuardApp.__init__
         sys.exit(app.exec())

@@ -1,40 +1,41 @@
 {
-    "blocked_sites": [
-        "www.youtube.com",
-        "youtube.com",
-        "www.facebook.com",
-        "facebook.com",
-        "www.twitter.com",
-        "twitter.com",
-        "www.instagram.com",
-        "instagram.com",
-        "www.tiktok.com",
-        "tiktok.com",
-        "www.reddit.com",
-        "reddit.com",
-        "www.netflix.com",
-        "netflix.com"
-    ],
-    "registered_devices": [
-        "d9f44c1a92a8f1f096cd6f9d37a02eb6900eda52de1c2e42e8b25585af60f7a8"
-    ],
-    "session_log": [
-        {
-            "date": "2026-05-21",
-            "start": "20:54:57",
-            "duration_minutes": 2
-        },
-        {
-            "date": "2026-05-28",
-            "start": "20:55:52",
-            "duration_minutes": 2
-        },
-        {
-            "date": "2026-05-28",
-            "start": "20:58:51",
-            "duration_minutes": 2
-        }
-    ],
-    "active_session": null,
-    "first_run": false
+    "blocked_sites":  [
+                          "www.youtube.com",
+                          "youtube.com",
+                          "www.facebook.com",
+                          "facebook.com",
+                          "www.twitter.com",
+                          "twitter.com",
+                          "www.instagram.com",
+                          "instagram.com",
+                          "www.tiktok.com",
+                          "tiktok.com",
+                          "www.reddit.com",
+                          "reddit.com",
+                          "www.netflix.com",
+                          "netflix.com"
+                      ],
+    "registered_devices":  [
+                               "a70b688854ac2a0aa807f3ace35c49c71629dc4692ed02fbce6286191e5d77a7",
+                               "fef9e6c4ea8fa1e8ea9e563be139b6713055e651dfd27348e4dcbe56c062e506"
+                           ],
+    "session_log":  [
+                        {
+                            "date":  "2026-05-21",
+                            "start":  "20:54:57",
+                            "duration_minutes":  2
+                        },
+                        {
+                            "date":  "2026-05-28",
+                            "start":  "20:55:52",
+                            "duration_minutes":  2
+                        },
+                        {
+                            "date":  "2026-05-28",
+                            "start":  "20:58:51",
+                            "duration_minutes":  2
+                        }
+                    ],
+    "active_session":  null,
+    "first_run":  false
 }

@@ -654,9 +654,10 @@ class FocusGuardApp(QMainWindow):
         self._resume     = resume_info
         self._logo_px    = {}
         self._blink_on   = True
-        self._usb_handles = []
-        self._usb_path    = None
-        self._usb_locked  = False
+        self._usb_handles   = []
+        self._usb_path      = None
+        self._usb_locked    = False
+        self._usb_fail_count = 0   # consecutive polls with no USB detected
         self._fade_step  = 8
         self._fade_in    = False
         self._fade_tgt   = "locked"
@@ -686,6 +687,7 @@ class FocusGuardApp(QMainWindow):
         self._usb_timer.start(2000)
 
         self._setup_tray()
+        QApplication.instance().aboutToQuit.connect(self._on_quit)
 
         if resume_info:
             self._resume_session(resume_info)
@@ -987,9 +989,16 @@ class FocusGuardApp(QMainWindow):
         erl.addWidget(self._add_btn)
         sbl.addWidget(entry_row)
 
+        # List of added custom sites (each row has a ✕ remove button)
+        self._custom_list_w = QWidget()
+        self._custom_list_l = QVBoxLayout(self._custom_list_w)
+        self._custom_list_l.setContentsMargins(16, 0, 16, 4)
+        self._custom_list_l.setSpacing(3)
+        sbl.addWidget(self._custom_list_w)
+
         self._clbl = QLabel("No custom sites added.")
         self._clbl.setFont(self._f(9))
-        self._clbl.setContentsMargins(20, 0, 0, 14)
+        self._clbl.setContentsMargins(20, 0, 0, 10)
         sbl.addWidget(self._clbl)
 
         layout.addWidget(self._sidebar)
@@ -1569,6 +1578,11 @@ class FocusGuardApp(QMainWindow):
                 self.setWindowOpacity(1.0)
                 self._fade_timer.stop()
                 self._fade_timer = None
+                # After every animated transition, bring the window to front
+                # so the lock screen is never hidden behind other windows.
+                self.show()
+                self.raise_()
+                self.activateWindow()
 
     def _roll_to(self, label, target, current=0, step=None):
         if step is None:
@@ -1600,6 +1614,13 @@ class FocusGuardApp(QMainWindow):
         self._usb_ok = dev is not None and not is_new
         T = self._T
 
+        # Track consecutive "no USB" results — a single WMI glitch must not
+        # kick the user back to the lock screen.  3 failures × 2 s = 6 s.
+        if dev is not None:
+            self._usb_fail_count = 0
+        else:
+            self._usb_fail_count += 1
+
         # Get the actual drive path (e.g. "E:\") — separate from the device hash
         usb_drive = get_usb_drive_path() if dev else None
 
@@ -1613,7 +1634,7 @@ class FocusGuardApp(QMainWindow):
             # Auto-apply protection if not already active
             if not is_protected(usb_drive):
                 QTimer.singleShot(700, lambda d=usb_drive: self._auto_protect_usb(d))
-        elif not self._usb_ok and usb_drive is None and self._usb_locked:
+        elif not self._usb_ok and usb_drive is None and self._usb_locked and self._usb_fail_count >= 3:
             unlock_usb_files(self._usb_handles)
             self._usb_locked = False
             self._usb_path   = None
@@ -1656,7 +1677,9 @@ class FocusGuardApp(QMainWindow):
                     QTimer.singleShot(800, lambda d=usb_drive: self._offer_protection(d))
 
         elif self._state == "dashboard":
-            if not self._usb_ok and dev is None:
+            # Require 3 consecutive failures (6 s) before locking — prevents
+            # a single slow WMI call from kicking the user off the dashboard.
+            if not self._usb_ok and dev is None and self._usb_fail_count >= 3:
                 self._fade_switch("locked")
             elif dev and is_new and not self._ask_reg:
                 self._ask_reg = True
@@ -1833,13 +1856,66 @@ class FocusGuardApp(QMainWindow):
             QMessageBox.warning(self, "Invalid Domain",
                 "Enter a valid domain (e.g. example.com)")
             return
+        if base in self._custom:
+            self._ce.clear()
+            return
         for s in [base, f"www.{base}"]:
-            if s not in self._custom:
-                self._custom.append(s)
+            self._custom.append(s)
+        self._add_custom_row(base)
         self._ce.clear()
         n = len([s for s in self._custom if not s.startswith("www.")])
         self._clbl.setText(f"✔  {n} custom site(s) added")
         self._clbl.setStyleSheet(f"color: {self._T['green']}; background: transparent;")
+        self._refresh_preview()
+
+    def _add_custom_row(self, base_domain):
+        T = self._T
+        row = QWidget()
+        row.setStyleSheet("background: transparent;")
+        rl = QHBoxLayout(row)
+        rl.setContentsMargins(4, 1, 4, 1)
+        rl.setSpacing(8)
+
+        lbl = QLabel(base_domain)
+        lbl.setFont(self._f(9))
+        lbl.setStyleSheet(f"color: {T['text']}; background: transparent;")
+        rl.addWidget(lbl)
+        rl.addStretch()
+
+        rm = QPushButton("✕")
+        rm.setFixedSize(22, 22)
+        rm.setFont(self._f(8))
+        rm.setCursor(QCursor(Qt.PointingHandCursor))
+        rm.setStyleSheet(f"""
+            QPushButton {{
+                background: rgba(239,68,68,0.12);
+                color: {T['red']};
+                border: 1px solid rgba(239,68,68,0.3);
+                border-radius: 5px;
+            }}
+            QPushButton:hover {{
+                background: rgba(239,68,68,0.28);
+            }}
+        """)
+        rm.clicked.connect(lambda _, d=base_domain, r=row: self._remove_custom(d, r))
+        rl.addWidget(rm)
+
+        self._custom_list_l.addWidget(row)
+
+    def _remove_custom(self, base_domain, row_widget):
+        for s in [base_domain, f"www.{base_domain}"]:
+            if s in self._custom:
+                self._custom.remove(s)
+        row_widget.deleteLater()
+        n = len([s for s in self._custom if not s.startswith("www.")])
+        if n == 0:
+            self._clbl.setText("No custom sites added.")
+            self._clbl.setStyleSheet(
+                f"color: {self._T['text_mid']}; background: transparent;")
+        else:
+            self._clbl.setText(f"✔  {n} custom site(s) added")
+            self._clbl.setStyleSheet(
+                f"color: {self._T['green']}; background: transparent;")
         self._refresh_preview()
 
     def _set_dur(self, mins):
@@ -2131,5 +2207,11 @@ class FocusGuardApp(QMainWindow):
                 "reaches zero.")
             event.ignore()
             return
+        # Never truly close — hide to tray so the app stays alive.
+        # The only real exit is via the tray icon "Exit" menu item.
+        event.ignore()
+        self.hide()
+
+    def _on_quit(self):
+        """Called by QApplication.aboutToQuit — release USB handles cleanly."""
         unlock_usb_files(self._usb_handles)
-        event.accept()

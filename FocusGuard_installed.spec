@@ -1,5 +1,5 @@
 # -*- mode: python ; coding: utf-8 -*-
-
+# Onedir build -- installed to Program Files for fast launch (no temp extraction).
 
 a = Analysis(
     ['main.py'],
@@ -46,10 +46,8 @@ splash = Splash(
 exe = EXE(
     pyz,
     a.scripts,
-    a.binaries,
-    a.datas,
+    [],
     splash,
-    splash.binaries,
     [],
     name='FocusGuard',
     debug=False,
@@ -57,7 +55,6 @@ exe = EXE(
     strip=False,
     upx=False,
     upx_exclude=[],
-    runtime_tmpdir=None,
     console=False,
     disable_windowed_traceback=False,
     argv_emulation=False,
@@ -66,4 +63,15 @@ exe = EXE(
     entitlements_file=None,
     icon=['image\\focus_logo.ico'],
     uac_admin=True,
+)
+
+coll = COLLECT(
+    exe,
+    a.binaries,
+    a.datas,
+    splash.binaries,
+    strip=False,
+    upx=False,
+    upx_exclude=[],
+    name='FocusGuard_installed',
 )

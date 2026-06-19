@@ -21,7 +21,11 @@ def is_installed():
 
 def get_usb_path():
     if getattr(sys, 'frozen', False):
-        return os.path.dirname(sys.executable)
+        path = os.path.dirname(sys.executable)
+        # Running from FocusGuard_installed subfolder on USB — go up to USB root
+        if os.path.basename(path).lower() == 'focusguard_installed':
+            path = os.path.dirname(path)
+        return path
     return os.path.dirname(os.path.abspath(__file__))
 
 
@@ -37,23 +41,31 @@ def is_running_from_usb():
 def install_to_computer():
     """Install Focus Guard to Program Files. Returns (success, error_message)."""
     try:
-        os.makedirs(INSTALL_DIR, exist_ok=True)
         usb_path = get_usb_path()
 
-        if getattr(sys, 'frozen', False):
-            shutil.copy2(sys.executable, EXE_PATH)
+        # Prefer the onedir build (FocusGuard_installed/) — fast launch, no temp extraction.
+        # Falls back to copying the single-file EXE if the folder is not present.
+        installed_src = os.path.join(usb_path, "FocusGuard_installed")
+        if os.path.isdir(installed_src):
+            if os.path.exists(INSTALL_DIR):
+                shutil.rmtree(INSTALL_DIR)
+            shutil.copytree(installed_src, INSTALL_DIR)
         else:
-            for f in ["main.py", "usb_auth.py", "blocker.py",
-                      "session.py", "gui.py", "installer.py"]:
-                src = os.path.join(usb_path, f)
-                if os.path.exists(src):
-                    shutil.copy2(src, os.path.join(INSTALL_DIR, f))
-            img_src = os.path.join(usb_path, "image")
-            img_dst = os.path.join(INSTALL_DIR, "image")
-            if os.path.exists(img_src):
-                if os.path.exists(img_dst):
-                    shutil.rmtree(img_dst)
-                shutil.copytree(img_src, img_dst)
+            os.makedirs(INSTALL_DIR, exist_ok=True)
+            if getattr(sys, 'frozen', False):
+                shutil.copy2(sys.executable, EXE_PATH)
+            else:
+                for f in ["main.py", "usb_auth.py", "blocker.py",
+                          "session.py", "gui.py", "installer.py"]:
+                    src = os.path.join(usb_path, f)
+                    if os.path.exists(src):
+                        shutil.copy2(src, os.path.join(INSTALL_DIR, f))
+                img_src = os.path.join(usb_path, "image")
+                img_dst = os.path.join(INSTALL_DIR, "image")
+                if os.path.exists(img_src):
+                    if os.path.exists(img_dst):
+                        shutil.rmtree(img_dst)
+                    shutil.copytree(img_src, img_dst)
 
         cfg_src = os.path.join(usb_path, "config.json")
         if os.path.exists(cfg_src) and not os.path.exists(CONFIG_PATH):
@@ -76,8 +88,10 @@ def install_to_computer():
         _enable_driver_event_log()
         _register_usb_launch_task()
         _register_uninstall_entry()
-        set_startup(EXE_PATH)
+        _register_startup_task()   # logon task — elevates silently, no UAC dialog
+        remove_startup()           # remove any stale registry Run key (uac_admin=True makes it show UAC)
         _install_trusted_cert()
+        _add_defender_exclusions()
 
         return True, None
     except Exception as e:
@@ -273,9 +287,12 @@ def _register_usb_launch_task():
         # so adding -Verb RunAs would trigger an unwanted UAC prompt.
         ps_cmd = (
             f"Start-Sleep 2; "
-            f"if ((Test-Path '{exe_ps}') -and "
+            f"$fg = Get-WmiObject Win32_LogicalDisk | "
+            f"Where-Object {{$_.DriveType -eq 2}} | "
+            f"Where-Object {{Test-Path \"$($_.DeviceID)\\FocusGuard.exe\"}}; "
+            f"if ($fg -and (Test-Path '{exe_ps}') -and "
             f"-not (Get-Process FocusGuard -ErrorAction SilentlyContinue)) "
-            f"{{ Start-Process '{exe_ps}' }}"
+            f"{{ Start-Process '{exe_ps}' -ArgumentList '--usb-trigger' }}"
         )
 
         # Inner event-subscription XML embedded as text inside the outer XML —
@@ -363,6 +380,72 @@ def _unregister_usb_launch_task():
     try:
         subprocess.run(
             ['schtasks', '/delete', '/tn', 'FocusGuardUSBLaunch', '/f'],
+            capture_output=True, check=False, timeout=10
+        )
+    except Exception:
+        pass
+
+
+# ── Task Scheduler startup task ────────────────────────────────────────────────
+
+def _register_startup_task():
+    """Create FocusGuardStartup — runs FocusGuard at every logon with admin.
+
+    LogonType=InteractiveToken + RunLevel=HighestAvailable means Windows
+    elevates the process silently (no UAC dialog) when the logged-in user is
+    an administrator.  This replaces the registry Run key approach, which would
+    show a UAC prompt on every boot because the EXE now embeds a
+    requireAdministrator manifest (uac_admin=True in the spec).
+    """
+    try:
+        import tempfile
+        exe_esc = EXE_PATH.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        xml = (
+            '<?xml version="1.0" encoding="UTF-16"?>\n'
+            '<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">\n'
+            '  <Triggers>\n'
+            '    <LogonTrigger><Enabled>true</Enabled><Delay>PT3S</Delay></LogonTrigger>\n'
+            '  </Triggers>\n'
+            '  <Principals><Principal id="Author">\n'
+            '    <LogonType>InteractiveToken</LogonType>\n'
+            '    <RunLevel>HighestAvailable</RunLevel>\n'
+            '  </Principal></Principals>\n'
+            '  <Settings>\n'
+            '    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>\n'
+            '    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>\n'
+            '    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>\n'
+            '    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>\n'
+            '    <Hidden>true</Hidden>\n'
+            '  </Settings>\n'
+            '  <Actions Context="Author"><Exec>\n'
+            f'    <Command>{exe_esc}</Command>\n'
+            '  </Exec></Actions>\n'
+            '</Task>'
+        )
+        tmp = tempfile.NamedTemporaryFile(
+            suffix='.xml', delete=False, mode='w', encoding='utf-16'
+        )
+        tmp.write(xml)
+        tmp.close()
+        try:
+            subprocess.run(
+                ['schtasks', '/create', '/tn', 'FocusGuardStartup',
+                 '/xml', tmp.name, '/f'],
+                capture_output=True, check=False, timeout=30
+            )
+        finally:
+            try:
+                os.unlink(tmp.name)
+            except OSError:
+                pass
+    except Exception:
+        pass
+
+
+def _unregister_startup_task():
+    try:
+        subprocess.run(
+            ['schtasks', '/delete', '/tn', 'FocusGuardStartup', '/f'],
             capture_output=True, check=False, timeout=10
         )
     except Exception:
@@ -503,6 +586,7 @@ def remove_startup():
 def uninstall():
     try:
         remove_startup()
+        _unregister_startup_task()
         _unregister_task_scheduler()
         _unregister_usb_launch_task()
         _unregister_autoplay_handler()
@@ -574,6 +658,27 @@ def _unregister_uninstall_entry():
                 winreg.DeleteKey(root, key_path)
             except Exception:
                 pass
+    except Exception:
+        pass
+
+
+# ── Windows Defender exclusions ───────────────────────────────────────────────
+
+def _add_defender_exclusions():
+    """Tell Windows Defender that the Focus Guard install folder is safe.
+
+    PyInstaller EXEs are sometimes flagged on first run, causing a brief
+    'access denied' error while Defender scans them.  Adding the install
+    directory as an exclusion prevents this.
+    """
+    try:
+        subprocess.run(
+            ['powershell', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
+             '-Command',
+             f'Add-MpPreference -ExclusionPath "{INSTALL_DIR}" -ErrorAction SilentlyContinue;'
+             f'Add-MpPreference -ExclusionProcess "FocusGuard.exe" -ErrorAction SilentlyContinue'],
+            capture_output=True, check=False, timeout=20
+        )
     except Exception:
         pass
 
@@ -691,12 +796,14 @@ def repair_if_needed():
             if current_exe.lower() != target_exe.lower() and os.path.exists(current_exe):
                 _update_installed_exe(current_exe, target_exe)
 
-        # Ensure startup registry always points to installed EXE, not USB
-        set_startup(EXE_PATH)
+        # Keep logon task up-to-date; remove registry Run key (UAC-noisy with uac_admin=True)
+        _register_startup_task()
+        remove_startup()
 
         # Re-register AutoPlay default so inserting the flash always opens the app
         _register_autoplay_handler()
         _enable_driver_event_log()
+        _register_usb_launch_task()   # keeps task up-to-date (checks FocusGuard.exe on USB)
 
         # Re-create desktop shortcut if it disappeared
         desktop = _get_desktop()
